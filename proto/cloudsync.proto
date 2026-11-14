@@ -1,0 +1,519 @@
+syntax = "proto3";
+
+package cloudsync.v1;
+
+option go_package = "cloudsync/core/rpc/pb";
+
+// CloudSync is served by the core: by cloudsyncd on desktops (unix socket
+// or named pipe) and in-process on Android. The Flutter app is a client.
+service CloudSync {
+  // Vault lifecycle.
+  rpc GetState(Empty) returns (State);
+  rpc CreateVault(CreateVaultRequest) returns (State);
+  rpc ImportVault(ImportVaultRequest) returns (State);
+  rpc Unlock(UnlockRequest) returns (State);
+  rpc LockVault(Empty) returns (State);
+  rpc ChangePassword(ChangePasswordRequest) returns (Empty);
+  // PermissionDenied unless the password opens the vault file (e.g. before
+  // saving it for fingerprint unlock).
+  rpc CheckPassword(CheckPasswordRequest) returns (Empty);
+  rpc ExportVault(Empty) returns (VaultFile);
+
+  // Storages.
+  rpc BackendTypes(Empty) returns (BackendTypesReply);
+  rpc AddBackend(AddBackendRequest) returns (Backend);
+  rpc SetBackendEnabled(SetBackendEnabledRequest) returns (Backend);
+  rpc RenameBackend(RenameBackendRequest) returns (Backend);
+  // Deletes a disabled storage no file uses any more (Repair moves data off).
+  // With force it goes even then: its shards count as lost (for a storage
+  // that is gone for good); Repair rebuilds what other shards allow.
+  rpc RemoveBackend(RemoveBackendRequest) returns (Empty);
+  // Browser sign-in for OAuth storages: the first reply carries the URL to
+  // open on this device, the last one the token for AddBackend params.
+  rpc Authorize(AuthorizeRequest) returns (stream AuthorizeReply);
+  // Signs in to the account of an existing OAuth storage again (revoked or
+  // expired token) and saves the new token; ID and data stay. Replies: the
+  // URL to open, then the account (token not sent). Refuses another account.
+  rpc Reconnect(IdRequest) returns (stream AuthorizeReply);
+  rpc Status(Empty) returns (StatusReply);
+  // Recent core events: storage failures, sync errors, mounts.
+  rpc Logs(LogsRequest) returns (LogsReply);
+  rpc ClearLogs(Empty) returns (Empty);
+  // Desktop: the folder the vault is shown in (empty = do not mount).
+  // Remounts at once when unlocked; kept for later starts.
+  rpc SetMountPoint(PathRequest) returns (State);
+  // Desktop: locks the vault and stops the daemon (the app starts it again
+  // when it reconnects).
+  rpc Shutdown(Empty) returns (Empty);
+
+  // Files.
+  rpc List(PathRequest) returns (ListReply);
+  rpc Search(SearchRequest) returns (ListReply);
+  rpc Stat(PathRequest) returns (Entry);
+  rpc Mkdir(PathRequest) returns (Empty);
+  rpc Remove(RemoveRequest) returns (Empty);
+  rpc Rename(RenameRequest) returns (Empty);
+  rpc Upload(UploadRequest) returns (UploadReply);
+  rpc Download(DownloadRequest) returns (Empty);
+
+  // Keeping files on this device.
+  rpc Pin(PathRequest) returns (Empty);
+  rpc Unpin(PathRequest) returns (Empty);
+
+  // Locks: who has a file open for writing.
+  rpc LockHolder(PathRequest) returns (LockInfo);
+  rpc Locks(PathsRequest) returns (LocksReply); // only locked paths are returned
+
+  // Maintenance.
+  rpc Sync(Empty) returns (Empty);
+  // Checks every shard, rewrites lost ones, re-encodes after a k/m change.
+  rpc Repair(RepairRequest) returns (RepairReply);
+  // Removes data no file uses (after a grace period, see GCRequest).
+  rpc GC(GCRequest) returns (GCReply);
+  // k/m for new files; Repair re-encodes existing ones.
+  rpc SetRedundancy(SetRedundancyRequest) returns (Empty);
+
+  // Password safe: passwords, SSH and web3 keys in groups. Lists carry no
+  // secret fields; GetSecret opens one entry (show it, then forget it).
+  rpc ListSecrets(Empty) returns (SecretsReply);
+  rpc GetSecret(IdRequest) returns (SecretEntry);
+  // Creates (empty id) or replaces an entry; returns it without secrets.
+  rpc PutSecret(SecretEntry) returns (SecretEntry);
+  rpc DeleteSecret(IdRequest) returns (Empty);
+  rpc PutSecretGroup(SecretGroup) returns (SecretGroup);
+  // Entries of a removed group stay, without a group.
+  rpc DeleteSecretGroup(IdRequest) returns (Empty);
+  // Public key of a private key, for the editor; nothing is stored.
+  rpc DeriveKey(DeriveKeyRequest) returns (DerivedKey);
+  // Current codes of every TOTP entry (the secrets stay in the core).
+  rpc TotpCodes(Empty) returns (TotpCodesReply);
+  // Removes a used recovery code from a TOTP entry; returns it without secrets.
+  rpc UseRecoveryCode(RecoveryCodeRequest) returns (SecretEntry);
+  // Reads a TOTP secret / otpauth:// URI and pasted recovery codes, for
+  // the editor; nothing is stored.
+  rpc CheckTotp(CheckTotpRequest) returns (TotpPreview);
+
+  // Events for live UI updates.
+  rpc Watch(Empty) returns (stream Event);
+}
+
+message Empty {}
+
+message State {
+  bool vault_exists = 1;
+  bool unlocked = 2;
+  string vault_path = 3;
+  string vault_id = 4;
+  string device_id = 5;
+  string device_name = 6;
+  string mount_point = 7; // empty when not mounted (always on Android)
+  string platform = 8;    // linux, windows, android
+  // Unlocked and working. Unlocked but not ready: the vault is open but the
+  // engine is not (too few storages for k+m, ...); problem says why. Storages
+  // can be added and k/m changed in that state.
+  bool ready = 9;
+  string problem = 10;
+  string mount_dir = 11; // configured folder, also while not mounted
+  bool can_mount = 12;   // the host can show the vault as a folder
+  // The core's build: the app shows it next to its own to spot a stale
+  // daemon (both come from one make run when built together).
+  string core_version = 13;
+  string core_build = 14;
+}
+
+message CreateVaultRequest {
+  string password = 1;
+  int32 data_shards = 2;   // k
+  int32 parity_shards = 3; // m: storages that may be lost
+  string device_name = 4;
+}
+
+message ImportVaultRequest {
+  bytes vault = 1; // content of a vault file from another device
+  string password = 2;
+  string device_name = 3;
+}
+
+message UnlockRequest {
+  string password = 1;
+  string device_name = 2;
+}
+
+message ChangePasswordRequest {
+  string old_password = 1;
+  string new_password = 2;
+}
+
+message CheckPasswordRequest {
+  string password = 1;
+}
+
+message VaultFile {
+  bytes vault = 1;
+}
+
+message BackendOption {
+  string name = 1;
+  string help = 2;
+  string default = 3;
+  bool required = 4;
+  bool password = 5;
+  bool advanced = 6;
+  repeated string examples = 7;
+}
+
+message BackendType {
+  string name = 1;
+  string description = 2;
+  bool oauth = 3; // needs a token from a browser sign-in
+  repeated BackendOption options = 4;
+}
+
+message BackendTypesReply {
+  repeated BackendType types = 1;
+}
+
+message AddBackendRequest {
+  string name = 1;
+  string type = 2;
+  string domain = 3; // failure domain; empty = type
+  string root = 4;   // folder in the account; empty = "cloudsync"
+  map<string, string> params = 5;
+  string account = 6; // who the user signed in as (from AuthorizeReply)
+}
+
+message IdRequest {
+  string id = 1;
+}
+
+message RemoveBackendRequest {
+  string id = 1;
+  bool force = 2;
+}
+
+message AuthorizeRequest {
+  string type = 1;
+  map<string, string> params = 2; // optional client_id / client_secret
+}
+
+message AuthorizeReply {
+  string url = 1;   // open it in a browser on this device
+  string token = 2; // set when sign-in finished
+  string account = 3; // e-mail / login of the signed-in account, if known
+}
+
+message RenameBackendRequest {
+  string id = 1;
+  string name = 2;
+}
+
+message SetBackendEnabledRequest {
+  string id = 1;
+  bool enabled = 2;
+}
+
+message Backend {
+  string id = 1;
+  string name = 2;
+  string type = 3;
+  string domain = 4;
+  bool enabled = 5;
+  bool online = 6;
+  bool behind = 7; // missing data other storages have; Repair fills it
+  string error = 8;
+  string account = 9; // e-mail / login / path; empty when unknown
+  string root = 10;
+  // Id of another storage in the same place (same account or folder): one
+  // of them should go, it adds no redundancy.
+  string same_as = 11;
+  // In the vault, not yet opened by the engine (just added; it reopens).
+  bool preparing = 12;
+  // Space of the account in bytes, set when the provider reports it (not
+  // every one does; an offline storage cannot).
+  optional int64 total_bytes = 13;
+  optional int64 free_bytes = 14;
+  int64 stored_bytes = 15; // this vault's shards there
+  // Recent response time of a read, a write and a listing in milliseconds
+  // (smoothed; 0 until this device made such a call).
+  int32 get_ms = 16;
+  int32 put_ms = 17;
+  int32 list_ms = 18;
+  bool oauth = 19; // signs in through a browser: Reconnect renews its token
+}
+
+message Device {
+  string id = 1;
+  string name = 2;
+  string platform = 3;
+  int64 added_unix = 4;
+}
+
+message StatusReply {
+  int32 data_shards = 1;
+  int32 parity_shards = 2;
+  repeated Backend backends = 3;
+  repeated Device devices = 4;
+  int32 pending = 5;       // local changes not uploaded yet
+  bool reload_needed = 6;  // vault changed elsewhere; lock and unlock
+  bool domain_risk = 7;    // one provider holds more than m shards
+  int64 cache_bytes = 8;
+  repeated string pins = 9;
+  string device_id = 10;
+  uint64 vault_version = 11;
+  int64 files_bytes = 12; // size of all file data (each block counted once)
+  // More file bytes that fit with full redundancy (until the first storage
+  // new data goes to is full). Unset: no storage reports its space.
+  // Storages that do not report are taken as unlimited.
+  optional int64 writable_bytes = 13;
+}
+
+message PathRequest {
+  string path = 1;
+}
+
+message PathsRequest {
+  repeated string paths = 1;
+}
+
+message SearchRequest {
+  string query = 1; // case-insensitive part of the name
+  int32 limit = 2;  // 0 = 200
+}
+
+message Entry {
+  string path = 1;
+  string name = 2;
+  bool dir = 3;
+  int64 size = 4;
+  int64 mtime_unix = 5;
+  bool local = 6;  // whole content on this device
+  bool pinned = 7; // kept on this device
+  string device = 8; // who made the current version
+  string conflict_of = 9; // set on conflict copies: the path they collided with
+}
+
+message ListReply {
+  repeated Entry entries = 1;
+}
+
+message RemoveRequest {
+  string path = 1;
+  bool recursive = 2;
+}
+
+message RenameRequest {
+  string from = 1;
+  string to = 2;
+}
+
+message UploadRequest {
+  repeated string local_paths = 1; // files or directories on this device
+  string remote_dir = 2;
+}
+
+message UploadReply {
+  int32 files = 1;
+}
+
+message DownloadRequest {
+  string path = 1;
+  string local_path = 2;
+}
+
+message LockInfo {
+  string path = 6;
+  bool locked = 1;
+  string device_id = 2;
+  string device_name = 3;
+  int64 since_unix = 4;
+  bool mine = 5;
+}
+
+message LocksReply {
+  repeated LockInfo locks = 1;
+}
+
+message RepairRequest {
+  bool rebalance = 1; // also spread data over storages added later
+}
+
+message RepairReply {
+  int32 blobs = 1;
+  int32 repaired = 2;
+  int32 failed = 3;
+  int32 journal_copies = 4;
+  int32 reencoded = 5;
+  int32 moved = 6;
+  // Files using a blob that could not be repaired: parts of them cannot be
+  // read now.
+  repeated string damaged = 7;
+  int32 from_local = 8; // blobs rebuilt from this device's copy
+}
+
+message GCRequest {
+  int64 grace_seconds = 1; // 0 = 7 days
+}
+
+message GCReply {
+  int32 objects = 1;
+  int32 unused = 2;
+  int32 deleted = 3;
+  repeated string skipped = 4; // storages that could not be listed
+}
+
+message SetRedundancyRequest {
+  int32 data_shards = 1;
+  int32 parity_shards = 2;
+}
+
+message Event {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    TREE_CHANGED = 1;  // files changed (any device)
+    STATE_CHANGED = 2; // locked/unlocked/mounted
+    SYNC_DONE = 3;
+    SYNC_ERROR = 4;
+    SECRETS_CHANGED = 5; // password safe changed (this device; others: TREE_CHANGED)
+  }
+  Kind kind = 1;
+  string message = 2;
+}
+
+message LogsRequest {
+  string backend_id = 1; // empty = all
+  int32 limit = 2;       // 0 = all kept
+}
+
+message LogEntry {
+  uint64 seq = 1;
+  int64 time_unix_ms = 2;  // last occurrence
+  int64 first_unix_ms = 3;
+  string level = 4;        // info, warn, error
+  string source = 5;       // storage, sync, mount, vault
+  string backend_id = 6;
+  string message = 7;
+  int32 count = 8;         // repeats folded into this entry
+}
+
+message LogsReply {
+  repeated LogEntry entries = 1;
+}
+
+// --- Password safe ---
+
+enum SecretKind {
+  SECRET_KIND_UNSPECIFIED = 0;
+  SECRET_PASSWORD = 1;
+  SECRET_SSH = 2;
+  SECRET_WEB3 = 3;
+  SECRET_TOTP = 4; // two-factor codes, with recovery codes
+}
+
+enum Web3Network {
+  WEB3_NETWORK_UNSPECIFIED = 0; // = EVM
+  WEB3_EVM = 1;                 // Ethereum and every EVM chain
+  WEB3_SOLANA = 2;
+}
+
+message SecretEntry {
+  string id = 1;
+  // Version the client edited (from GetSecret); a change made meanwhile on
+  // another device is kept as a conflict copy instead of being replaced.
+  string version = 2;
+  SecretKind kind = 3;
+  string title = 4;
+  string group_id = 5;
+  string username = 6;
+  string url = 7;
+  string comment = 8; // SSH: comment of the public key line
+  Web3Network network = 9;
+  // Derived by the core from the private key (read only).
+  string key_type = 10;
+  string public_key = 11; // SSH: authorized_keys line
+  string fingerprint = 12;
+  string address = 13;
+  int64 created_unix = 14;
+  int64 updated_unix = 15;
+  string device = 16;      // who made this version
+  string conflict_of = 17; // set on a conflict copy: the entry it collided with
+  int32 recovery_left = 18; // TOTP: recovery codes not used yet
+  // Secret fields: only in GetSecret replies and PutSecret requests.
+  bool opened = 20;
+  string password = 21;
+  string notes = 22;
+  string private_key = 23;
+  string passphrase = 24; // of an encrypted SSH key
+  // TOTP. In PutSecret the secret may be an otpauth:// URI (its parameters
+  // then win); GetSecret returns the base32 key. 0 / "" = default.
+  string totp_secret = 25;
+  string totp_algorithm = 26; // SHA1, SHA256, SHA512
+  int32 totp_digits = 27;
+  int32 totp_period = 28;
+  // PutSecret: pasted text is parsed into codes (any element may hold many).
+  repeated string recovery_codes = 29;
+}
+
+message SecretGroup {
+  string id = 1;
+  string name = 2;
+  bytes icon = 3; // PNG / JPEG, at most 64 KiB
+  string conflict_of = 4;
+}
+
+message SecretsReply {
+  repeated SecretGroup groups = 1;
+  repeated SecretEntry entries = 2;
+  int32 broken = 3; // records that could not be opened
+}
+
+message DeriveKeyRequest {
+  SecretKind kind = 1; // SSH or WEB3
+  Web3Network network = 2;
+  string private_key = 3;
+  string passphrase = 4;
+  string comment = 5;
+}
+
+message DerivedKey {
+  string key_type = 1;
+  string public_key = 2;
+  string fingerprint = 3;
+  string address = 4;
+}
+
+message TotpCode {
+  string id = 1; // entry id
+  string code = 2;
+  string next = 3; // code of the next period
+  int32 period = 4;
+  int64 expires_unix = 5; // when code stops being valid
+}
+
+message TotpCodesReply {
+  repeated TotpCode codes = 1;
+  int64 now_unix = 2; // the core's clock, to count down against
+}
+
+message RecoveryCodeRequest {
+  string id = 1;
+  string code = 2;
+}
+
+message CheckTotpRequest {
+  string secret = 1; // base32 key or otpauth:// URI
+  string algorithm = 2;
+  int32 digits = 3;
+  int32 period = 4;
+  string recovery_text = 5;
+}
+
+message TotpPreview {
+  string issuer = 1; // from the URI
+  string account = 2;
+  string algorithm = 3;
+  int32 digits = 4;
+  int32 period = 5;
+  string code = 6; // current code, to compare with the site
+  repeated string recovery_codes = 7;
+  string error = 8; // of the secret; codes are parsed anyway
+}

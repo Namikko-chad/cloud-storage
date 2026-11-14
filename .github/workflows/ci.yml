@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: FUSE headers
+        run: sudo apt-get update && sudo apt-get install -y libfuse-dev
+      - name: gofmt
+        run: test -z "$(gofmt -l core cmd mobilebind)" || (gofmt -l core cmd mobilebind; exit 1)
+      - run: make vet
+      - run: make race
+      - run: make build build-windows
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.6
+          channel: stable
+          cache: true
+      - run: make app-test

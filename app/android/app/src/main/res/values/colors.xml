@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- hm-bg: the launch screen is painted in it (no white flash). -->
+    <color name="hm_bg">#FF080C10</color>
+</resources>

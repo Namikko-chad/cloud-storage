@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sync_channel_name">Синхронизация</string>
+    <string name="sync_channel_description">CloudSync синхронизирует файлы в фоне</string>
+    <string name="sync_notification_text">Синхронизация файлов</string>
+    <string name="vault_root_unlocked">Зашифрованное хранилище</string>
+    <string name="vault_root_locked">Разблокируйте vault в приложении</string>
+</resources>

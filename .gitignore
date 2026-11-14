@@ -1,0 +1,8 @@
+/bin/
+/builds/
+*.test
+*.out
+/vault.cs
+# The health-monitor starter moved out of app/ (kept for reference, not part of the project).
+/starter-backup/
+CLAUDE.md
